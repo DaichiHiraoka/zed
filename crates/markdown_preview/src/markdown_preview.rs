@@ -36,7 +36,13 @@ actions!(
         /// Reopens the current rendered markdown editor as source.
         OpenSourceEditor,
         /// Toggles the current markdown file between source and rendered edit modes.
-        ToggleRenderedEditor
+        ToggleRenderedEditor,
+        /// Toggles strong emphasis around the rendered/source Markdown selection.
+        ToggleStrong,
+        /// Toggles emphasis around the rendered/source Markdown selection.
+        ToggleEmphasis,
+        /// Toggles inline code around the rendered/source Markdown selection.
+        ToggleInlineCode
     ]
 );
 

@@ -663,6 +663,9 @@
     "context": "MarkdownPreview",
     "use_key_equivalents": true,
     "bindings": {
+      "cmd-b": "markdown::ToggleStrong",
+      "cmd-i": "markdown::ToggleEmphasis",
+      "cmd-`": "markdown::ToggleInlineCode",
       "cmd-shift-m": "markdown::ToggleRenderedEditor",
     },
   },

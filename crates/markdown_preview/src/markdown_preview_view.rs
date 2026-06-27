@@ -44,7 +44,8 @@ use zed_actions::{DecreaseBufferFontSize, IncreaseBufferFontSize, ResetBufferFon
 use crate::markdown_preview_settings::MarkdownPreviewSettings;
 use crate::{
     OpenFollowingPreview, OpenPreview, OpenPreviewToTheSide, OpenRenderedEditor, OpenSourceEditor,
-    ScrollDown, ScrollDownByItem, ToggleRenderedEditor,
+    ScrollDown, ScrollDownByItem, ToggleEmphasis, ToggleInlineCode, ToggleRenderedEditor,
+    ToggleStrong,
 };
 use crate::{ScrollPageDown, ScrollPageUp, ScrollToBottom, ScrollToTop, ScrollUp, ScrollUpByItem};
 
@@ -929,6 +930,137 @@ impl MarkdownPreviewView {
         });
     }
 
+    fn rendered_toggle_strong(
+        &mut self,
+        _: &ToggleStrong,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_inline_delimiter_to_rendered_selection("**", window, cx);
+    }
+
+    fn rendered_toggle_emphasis(
+        &mut self,
+        _: &ToggleEmphasis,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_inline_delimiter_to_rendered_selection("*", window, cx);
+    }
+
+    fn rendered_toggle_inline_code(
+        &mut self,
+        _: &ToggleInlineCode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_inline_delimiter_to_rendered_selection("`", window, cx);
+    }
+
+    fn apply_inline_delimiter_to_rendered_selection(
+        &mut self,
+        delimiter: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.mode != MarkdownPreviewMode::RenderedEditor {
+            return;
+        }
+
+        let Some(editor) = self
+            .active_editor
+            .as_ref()
+            .map(|editor_state| editor_state.editor.clone())
+        else {
+            return;
+        };
+
+        editor.update(cx, |editor, cx| {
+            let Some((selection_range, _)) = Self::selected_source_selection(editor, cx) else {
+                return;
+            };
+            let source = editor
+                .buffer()
+                .read(cx)
+                .as_singleton()
+                .map(|buffer| buffer.read(cx).snapshot().text())
+                .unwrap_or_default();
+            let delimiter_len = delimiter.len();
+
+            if selection_range.is_empty() {
+                let insert = format!("{delimiter}{delimiter}");
+                let cursor = selection_range.start + delimiter_len;
+                editor.edit(
+                    [(
+                        MultiBufferOffset(selection_range.start)
+                            ..MultiBufferOffset(selection_range.start),
+                        insert,
+                    )],
+                    cx,
+                );
+                editor.change_selections(SelectionEffects::no_scroll(), window, cx, |selections| {
+                    selections
+                        .select_ranges([MultiBufferOffset(cursor)..MultiBufferOffset(cursor)]);
+                });
+                return;
+            }
+
+            let has_wrapping_delimiters = selection_range.start >= delimiter_len
+                && source
+                    .get(selection_range.start - delimiter_len..selection_range.start)
+                    .is_some_and(|prefix| prefix == delimiter)
+                && source
+                    .get(selection_range.end..selection_range.end + delimiter_len)
+                    .is_some_and(|suffix| suffix == delimiter);
+
+            if has_wrapping_delimiters {
+                editor.edit(
+                    [
+                        (
+                            MultiBufferOffset(selection_range.start - delimiter_len)
+                                ..MultiBufferOffset(selection_range.start),
+                            "",
+                        ),
+                        (
+                            MultiBufferOffset(selection_range.end)
+                                ..MultiBufferOffset(selection_range.end + delimiter_len),
+                            "",
+                        ),
+                    ],
+                    cx,
+                );
+                let start = selection_range.start - delimiter_len;
+                let end = selection_range.end - delimiter_len;
+                editor.change_selections(SelectionEffects::no_scroll(), window, cx, |selections| {
+                    selections.select_ranges([MultiBufferOffset(start)..MultiBufferOffset(end)]);
+                });
+            } else {
+                editor.edit(
+                    [
+                        (
+                            MultiBufferOffset(selection_range.start)
+                                ..MultiBufferOffset(selection_range.start),
+                            delimiter,
+                        ),
+                        (
+                            MultiBufferOffset(selection_range.end)
+                                ..MultiBufferOffset(selection_range.end),
+                            delimiter,
+                        ),
+                    ],
+                    cx,
+                );
+                let start = selection_range.start + delimiter_len;
+                let end = selection_range.end + delimiter_len;
+                editor.change_selections(SelectionEffects::no_scroll(), window, cx, |selections| {
+                    selections.select_ranges([MultiBufferOffset(start)..MultiBufferOffset(end)]);
+                });
+            }
+        });
+
+        self.update_markdown_from_active_editor(true, false, window, cx);
+    }
+
     fn scroll_by_amount(&self, distance: Pixels) {
         let offset = self.scroll_handle.offset();
         self.scroll_handle
@@ -1649,6 +1781,9 @@ impl Render for MarkdownPreviewView {
             .on_action(cx.listener(MarkdownPreviewView::rendered_paste))
             .on_action(cx.listener(MarkdownPreviewView::rendered_undo))
             .on_action(cx.listener(MarkdownPreviewView::rendered_redo))
+            .on_action(cx.listener(MarkdownPreviewView::rendered_toggle_strong))
+            .on_action(cx.listener(MarkdownPreviewView::rendered_toggle_emphasis))
+            .on_action(cx.listener(MarkdownPreviewView::rendered_toggle_inline_code))
             .on_action(cx.listener(MarkdownPreviewView::scroll_page_up))
             .on_action(cx.listener(MarkdownPreviewView::scroll_page_down))
             .on_action(cx.listener(MarkdownPreviewView::scroll_up))
@@ -2272,6 +2407,7 @@ mod tests {
     use crate::markdown_preview_view::ImageSource;
     use crate::markdown_preview_view::Resource;
     use crate::markdown_preview_view::resolve_preview_image;
+    use crate::{ToggleEmphasis, ToggleInlineCode, ToggleStrong};
     use buffer_diff::BufferDiff;
     use editor::actions::{Backspace, Newline, Undo};
     use editor::{Editor, MultiBufferOffset, SelectionEffects};
@@ -2664,6 +2800,105 @@ mod tests {
             })
             .unwrap();
         assert_eq!(source_text(multi_workspace, cx), "Hello\n");
+    }
+
+    #[gpui::test]
+    async fn rendered_editor_toggles_inline_markdown_formatting(cx: &mut TestAppContext) {
+        let app_state = init_test(cx);
+        app_state
+            .fs
+            .as_fake()
+            .insert_tree(
+                path!("/dir"),
+                json!({
+                    "note.md": "Hello",
+                }),
+            )
+            .await;
+
+        cx.update(|cx| {
+            open_paths(
+                &[PathBuf::from(path!("/dir/note.md"))],
+                app_state.clone(),
+                workspace::OpenOptions::default(),
+                cx,
+            )
+        })
+        .await
+        .unwrap();
+        cx.run_until_parked();
+
+        let multi_workspace = cx.update(|cx| cx.windows()[0].downcast::<MultiWorkspace>().unwrap());
+        multi_workspace
+            .update(cx, |multi_workspace, window, cx| {
+                multi_workspace.workspace().update(cx, |workspace, cx| {
+                    let editor: Entity<Editor> = workspace
+                        .active_item(cx)
+                        .and_then(|item| item.act_as::<Editor>(cx))
+                        .unwrap();
+                    editor.update(cx, |editor, cx| {
+                        editor.change_selections(SelectionEffects::no_scroll(), window, cx, |s| {
+                            s.select_ranges([MultiBufferOffset(0)..MultiBufferOffset(5)]);
+                        });
+                    });
+                    MarkdownPreviewView::replace_active_item_with_rendered_editor(
+                        workspace, editor, window, cx,
+                    );
+                })
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        let source_text = |multi_workspace: WindowHandle<MultiWorkspace>,
+                           cx: &mut TestAppContext| {
+            multi_workspace
+                .update(cx, |multi_workspace, _, cx| {
+                    let workspace = multi_workspace.workspace().read(cx);
+                    let active_item = workspace.active_item(cx).unwrap();
+                    let editor: Entity<Editor> = active_item.act_as::<Editor>(cx).unwrap();
+                    let buffer = editor.read(cx).buffer().read(cx).as_singleton().unwrap();
+                    buffer.read(cx).snapshot().text()
+                })
+                .unwrap()
+        };
+
+        multi_workspace
+            .update(cx, |multi_workspace, window, cx| {
+                let workspace = multi_workspace.workspace().read(cx);
+                let active_item = workspace.active_item(cx).unwrap();
+                let rendered_editor = active_item.downcast::<MarkdownPreviewView>().unwrap();
+                rendered_editor.update(cx, |rendered_editor, cx| {
+                    rendered_editor.rendered_toggle_strong(&ToggleStrong, window, cx);
+                });
+            })
+            .unwrap();
+        assert_eq!(source_text(multi_workspace.clone(), cx), "**Hello**");
+
+        multi_workspace
+            .update(cx, |multi_workspace, window, cx| {
+                let workspace = multi_workspace.workspace().read(cx);
+                let active_item = workspace.active_item(cx).unwrap();
+                let rendered_editor = active_item.downcast::<MarkdownPreviewView>().unwrap();
+                rendered_editor.update(cx, |rendered_editor, cx| {
+                    rendered_editor.rendered_toggle_strong(&ToggleStrong, window, cx);
+                    rendered_editor.rendered_toggle_emphasis(&ToggleEmphasis, window, cx);
+                });
+            })
+            .unwrap();
+        assert_eq!(source_text(multi_workspace.clone(), cx), "*Hello*");
+
+        multi_workspace
+            .update(cx, |multi_workspace, window, cx| {
+                let workspace = multi_workspace.workspace().read(cx);
+                let active_item = workspace.active_item(cx).unwrap();
+                let rendered_editor = active_item.downcast::<MarkdownPreviewView>().unwrap();
+                rendered_editor.update(cx, |rendered_editor, cx| {
+                    rendered_editor.rendered_toggle_emphasis(&ToggleEmphasis, window, cx);
+                    rendered_editor.rendered_toggle_inline_code(&ToggleInlineCode, window, cx);
+                });
+            })
+            .unwrap();
+        assert_eq!(source_text(multi_workspace, cx), "`Hello`");
     }
 
     #[test]

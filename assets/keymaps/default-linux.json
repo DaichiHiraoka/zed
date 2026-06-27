@@ -614,6 +614,9 @@
   {
     "context": "MarkdownPreview",
     "bindings": {
+      "ctrl-b": "markdown::ToggleStrong",
+      "ctrl-i": "markdown::ToggleEmphasis",
+      "ctrl-`": "markdown::ToggleInlineCode",
       "ctrl-shift-m": "markdown::ToggleRenderedEditor",
     },
   },
