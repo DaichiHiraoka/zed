@@ -178,6 +178,8 @@
   {
     "context": "Markdown",
     "bindings": {
+      "cut": "markdown::Cut",
+      "ctrl-x": "markdown::Cut",
       "copy": "markdown::Copy",
       "ctrl-insert": "markdown::Copy",
       "ctrl-c": "markdown::Copy",

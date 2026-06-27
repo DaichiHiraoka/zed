@@ -177,6 +177,7 @@
     "context": "Markdown",
     "use_key_equivalents": true,
     "bindings": {
+      "ctrl-x": "markdown::Cut",
       "ctrl-c": "markdown::Copy",
     },
   },

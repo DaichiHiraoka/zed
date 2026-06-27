@@ -215,6 +215,7 @@
     "context": "Markdown",
     "use_key_equivalents": true,
     "bindings": {
+      "cmd-x": "markdown::Cut",
       "cmd-c": "markdown::Copy",
     },
   },

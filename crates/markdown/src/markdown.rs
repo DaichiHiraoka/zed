@@ -461,6 +461,8 @@ actions!(
     [
         /// Copies the selected text to the clipboard.
         Copy,
+        /// Cuts the selected rendered text to the clipboard.
+        Cut,
         /// Copies the selected text as markdown to the clipboard.
         CopyAsMarkdown
     ]
@@ -889,12 +891,22 @@ impl Markdown {
         self.active_search_highlight
     }
 
-    fn copy(&self, text: &RenderedText, _: &mut Window, cx: &mut Context<Self>) {
+    fn copy_rendered_selection(
+        &self,
+        text: &RenderedText,
+        cx: &mut Context<Self>,
+    ) -> Option<Range<usize>> {
         if self.selection.end <= self.selection.start {
-            return;
+            return None;
         }
-        let text = text.text_for_range(self.selection.start..self.selection.end);
+        let selection = self.selection.start..self.selection.end;
+        let text = text.text_for_range(selection.clone());
         cx.write_to_clipboard(ClipboardItem::new_string(text));
+        Some(selection)
+    }
+
+    fn copy(&self, text: &RenderedText, _: &mut Window, cx: &mut Context<Self>) {
+        self.copy_rendered_selection(text, cx);
     }
 
     fn copy_as_markdown(&mut self, _: &mut Window, cx: &mut Context<Self>) {
@@ -1257,6 +1269,7 @@ pub struct MarkdownElement {
     code_span_link: Option<CodeSpanLinkCallback>,
     on_source_click: Option<SourceClickCallback>,
     on_checkbox_toggle: Option<CheckboxToggleCallback>,
+    on_cut: Option<Rc<dyn Fn(Range<usize>, &mut Window, &mut App)>>,
     image_resolver: Option<Box<dyn Fn(&str) -> Option<ImageSource>>>,
     show_root_block_markers: bool,
     autoscroll: AutoscrollBehavior,
@@ -1276,6 +1289,7 @@ impl MarkdownElement {
             code_span_link: None,
             on_source_click: None,
             on_checkbox_toggle: None,
+            on_cut: None,
             image_resolver: None,
             show_root_block_markers: false,
             autoscroll: AutoscrollBehavior::Propagate,
@@ -1337,6 +1351,14 @@ impl MarkdownElement {
         handler: impl Fn(Range<usize>, bool, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.on_checkbox_toggle = Some(Rc::new(handler));
+        self
+    }
+
+    pub fn on_cut(
+        mut self,
+        handler: impl Fn(Range<usize>, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_cut = Some(Rc::new(handler));
         self
     }
 
@@ -2811,6 +2833,22 @@ impl Element for MarkdownElement {
                 }
             }
         });
+        if let Some(on_cut) = self.on_cut.clone() {
+            window.on_action(std::any::TypeId::of::<crate::Cut>(), {
+                let entity = self.markdown.clone();
+                let text = rendered_markdown.text.clone();
+                move |_, phase, window, cx| {
+                    if phase == DispatchPhase::Bubble {
+                        let text = text.clone();
+                        let selection = entity
+                            .update(cx, move |this, cx| this.copy_rendered_selection(&text, cx));
+                        if let Some(selection) = selection {
+                            on_cut(selection, window, cx);
+                        }
+                    }
+                }
+            });
+        }
         window.on_action(std::any::TypeId::of::<crate::CopyAsMarkdown>(), {
             let entity = self.markdown.clone();
             move |_, phase, window, cx| {

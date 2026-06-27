@@ -1580,7 +1580,9 @@ impl MarkdownPreviewView {
 
         if let Some(active_editor) = active_editor {
             let editor_for_checkbox = active_editor.clone();
+            let editor_for_cut = active_editor.clone();
             let view_handle = cx.entity().downgrade();
+            let view_handle_for_cut = view_handle.clone();
             let rendered_editor_mode = self.mode == MarkdownPreviewMode::RenderedEditor;
             let rendered_editor_focus_handle = self.focus_handle.clone();
             markdown_element = markdown_element
@@ -1616,10 +1618,44 @@ impl MarkdownPreviewView {
                         cx,
                     );
                     Self::refresh_preview(view_handle.clone(), window, cx);
+                })
+                .on_cut(move |source_range, window, cx| {
+                    if rendered_editor_mode {
+                        Self::cut_rendered_selection_from_editor(
+                            &editor_for_cut,
+                            source_range,
+                            window,
+                            cx,
+                        );
+                        Self::refresh_preview(view_handle_for_cut.clone(), window, cx);
+                    }
                 });
         }
 
         markdown_element
+    }
+
+    fn cut_rendered_selection_from_editor(
+        editor: &Entity<Editor>,
+        source_range: Range<usize>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if source_range.start >= source_range.end {
+            return;
+        }
+
+        editor.update(cx, |editor, cx| {
+            if editor.read_only(cx) {
+                return;
+            }
+
+            let start = MultiBufferOffset(source_range.start);
+            editor.edit([(start..MultiBufferOffset(source_range.end), "")], cx);
+            editor.change_selections(SelectionEffects::no_scroll(), window, cx, |selections| {
+                selections.select_ranges([start..start]);
+            });
+        });
     }
 
     fn apply_checkbox_toggle_to_editor(
@@ -3142,6 +3178,65 @@ mod tests {
             })
             .unwrap();
         assert_eq!(source_text(multi_workspace, cx), "Hello\n");
+    }
+
+    #[gpui::test]
+    async fn rendered_editor_cuts_selected_source_range(cx: &mut TestAppContext) {
+        let app_state = init_test(cx);
+        app_state
+            .fs
+            .as_fake()
+            .insert_tree(
+                path!("/dir"),
+                json!({
+                    "note.md": "Hello **world**\n",
+                }),
+            )
+            .await;
+
+        cx.update(|cx| {
+            open_paths(
+                &[PathBuf::from(path!("/dir/note.md"))],
+                app_state.clone(),
+                workspace::OpenOptions::default(),
+                cx,
+            )
+        })
+        .await
+        .unwrap();
+        cx.run_until_parked();
+
+        let multi_workspace = cx.update(|cx| cx.windows()[0].downcast::<MultiWorkspace>().unwrap());
+        multi_workspace
+            .update(cx, |multi_workspace, window, cx| {
+                multi_workspace.workspace().update(cx, |workspace, cx| {
+                    let editor: Entity<Editor> = workspace
+                        .active_item(cx)
+                        .and_then(|item| item.act_as::<Editor>(cx))
+                        .unwrap();
+                    MarkdownPreviewView::replace_active_item_with_rendered_editor(
+                        workspace, editor, window, cx,
+                    );
+                })
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        multi_workspace
+            .update(cx, |multi_workspace, window, cx| {
+                let workspace = multi_workspace.workspace().read(cx);
+                let active_item = workspace.active_item(cx).unwrap();
+                let editor: Entity<Editor> = active_item.act_as::<Editor>(cx).unwrap();
+                MarkdownPreviewView::cut_rendered_selection_from_editor(&editor, 8..13, window, cx);
+
+                let buffer = editor.read(cx).buffer().read(cx).as_singleton().unwrap();
+                assert_eq!(buffer.read(cx).snapshot().text(), "Hello ****\n");
+                let selection = editor.update(cx, |editor, cx| {
+                    MarkdownPreviewView::selected_source_selection(editor, cx)
+                });
+                assert_eq!(selection, Some((8..8, false)));
+            })
+            .unwrap();
     }
 
     #[gpui::test]
