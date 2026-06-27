@@ -10,10 +10,11 @@ use anyhow::{Context as _, Result};
 use editor::scroll::Autoscroll;
 use editor::{Editor, EditorEvent, MultiBufferOffset, SelectionEffects};
 use gpui::{
-    App, ClipboardItem, Context, Entity, EntityId, EventEmitter, FocusHandle, Focusable,
-    ImageSource, InteractiveElement, IntoElement, IsZero, Pixels, Render, Resource,
-    RetainAllImageCache, ScrollHandle, SharedString, SharedUri, Subscription, Task, WeakEntity,
-    Window, point, px,
+    App, Bounds, ClipboardItem, Context, Element, ElementId, ElementInputHandler, Entity, EntityId,
+    EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId, ImageSource,
+    InspectorElementId, InteractiveElement, IntoElement, IsZero, LayoutId, Pixels, Render,
+    Resource, RetainAllImageCache, ScrollHandle, SharedString, SharedUri, Subscription, Task,
+    UTF16Selection, WeakEntity, Window, point, px,
 };
 use language::{Capability, LanguageRegistry};
 use markdown::{
@@ -1486,7 +1487,7 @@ impl Render for MarkdownPreviewView {
             .map(|theme| theme.colors().editor_background)
             .unwrap_or_else(|| cx.theme().colors().editor_background);
         let preview_font_size = ThemeSettings::get_global(cx).markdown_preview_font_size(cx);
-        div()
+        let content = div()
             .image_cache(self.image_cache.clone())
             .id("MarkdownPreview")
             .key_context("MarkdownPreview")
@@ -1582,6 +1583,242 @@ impl Render for MarkdownPreviewView {
                 ),
             )
             .vertical_scrollbar_for(&self.scroll_handle, window, cx)
+            .into_any_element();
+
+        if self.mode == MarkdownPreviewMode::RenderedEditor {
+            RenderedMarkdownInputElement {
+                child: content,
+                focus_handle: self.focus_handle.clone(),
+                view: cx.entity().clone(),
+            }
+            .into_any_element()
+        } else {
+            content
+        }
+    }
+}
+
+struct RenderedMarkdownInputElement {
+    child: AnyElement,
+    focus_handle: FocusHandle,
+    view: Entity<MarkdownPreviewView>,
+}
+
+impl IntoElement for RenderedMarkdownInputElement {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl Element for RenderedMarkdownInputElement {
+    type RequestLayoutState = LayoutId;
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        let layout_id = self.child.request_layout(window, cx);
+        (layout_id, layout_id)
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        self.child.prepaint(window, cx);
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        _prepaint: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        window.handle_input(
+            &self.focus_handle,
+            ElementInputHandler::new(bounds, self.view.clone()),
+            cx,
+        );
+        self.child.paint(window, cx);
+    }
+}
+
+impl EntityInputHandler for MarkdownPreviewView {
+    fn text_for_range(
+        &mut self,
+        range: Range<usize>,
+        adjusted_range: &mut Option<Range<usize>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<String> {
+        self.active_editor
+            .as_ref()
+            .filter(|_| self.mode == MarkdownPreviewMode::RenderedEditor)
+            .and_then(|state| {
+                state.editor.update(cx, |editor, cx| {
+                    editor.text_for_range(range, adjusted_range, window, cx)
+                })
+            })
+    }
+
+    fn selected_text_range(
+        &mut self,
+        ignore_disabled_input: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<UTF16Selection> {
+        self.active_editor
+            .as_ref()
+            .filter(|_| self.mode == MarkdownPreviewMode::RenderedEditor)
+            .and_then(|state| {
+                state.editor.update(cx, |editor, cx| {
+                    editor.selected_text_range(ignore_disabled_input, window, cx)
+                })
+            })
+    }
+
+    fn marked_text_range(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Range<usize>> {
+        self.active_editor
+            .as_ref()
+            .filter(|_| self.mode == MarkdownPreviewMode::RenderedEditor)
+            .and_then(|state| {
+                state
+                    .editor
+                    .update(cx, |editor, cx| editor.marked_text_range(window, cx))
+            })
+    }
+
+    fn unmark_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.mode == MarkdownPreviewMode::RenderedEditor
+            && let Some(state) = &self.active_editor
+        {
+            state
+                .editor
+                .update(cx, |editor, cx| editor.unmark_text(window, cx));
+        }
+    }
+
+    fn replace_text_in_range(
+        &mut self,
+        range: Option<Range<usize>>,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.mode == MarkdownPreviewMode::RenderedEditor
+            && let Some(state) = &self.active_editor
+        {
+            state.editor.update(cx, |editor, cx| {
+                editor.replace_text_in_range(range, text, window, cx)
+            });
+            self.update_markdown_from_active_editor(true, false, window, cx);
+        }
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        range: Option<Range<usize>>,
+        new_text: &str,
+        new_selected_range: Option<Range<usize>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.mode == MarkdownPreviewMode::RenderedEditor
+            && let Some(state) = &self.active_editor
+        {
+            state.editor.update(cx, |editor, cx| {
+                editor.replace_and_mark_text_in_range(
+                    range,
+                    new_text,
+                    new_selected_range,
+                    window,
+                    cx,
+                )
+            });
+            self.update_markdown_from_active_editor(true, false, window, cx);
+        }
+    }
+
+    fn bounds_for_range(
+        &mut self,
+        range_utf16: Range<usize>,
+        element_bounds: Bounds<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Bounds<Pixels>> {
+        self.active_editor
+            .as_ref()
+            .filter(|_| self.mode == MarkdownPreviewMode::RenderedEditor)
+            .and_then(|state| {
+                state.editor.update(cx, |editor, cx| {
+                    editor
+                        .bounds_for_range(range_utf16, element_bounds, window, cx)
+                        .or(Some(element_bounds))
+                })
+            })
+    }
+
+    fn character_index_for_point(
+        &mut self,
+        point: gpui::Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<usize> {
+        self.active_editor
+            .as_ref()
+            .filter(|_| self.mode == MarkdownPreviewMode::RenderedEditor)
+            .and_then(|state| {
+                state
+                    .editor
+                    .update(cx, |editor, cx| {
+                        editor.character_index_for_point(point, window, cx)
+                    })
+                    .or_else(|| {
+                        state.editor.update(cx, |editor, cx| {
+                            editor
+                                .selected_text_range(true, window, cx)
+                                .map(|selection| selection.range.end)
+                        })
+                    })
+            })
+    }
+
+    fn accepts_text_input(&self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        self.active_editor
+            .as_ref()
+            .filter(|_| self.mode == MarkdownPreviewMode::RenderedEditor)
+            .is_some_and(|state| {
+                state
+                    .editor
+                    .update(cx, |editor, cx| editor.accepts_text_input(window, cx))
+            })
     }
 }
 
@@ -1880,7 +2117,7 @@ mod tests {
     use crate::markdown_preview_view::resolve_preview_image;
     use buffer_diff::BufferDiff;
     use editor::{Editor, MultiBufferOffset};
-    use gpui::{AppContext as _, Entity, TestAppContext};
+    use gpui::{AppContext as _, Entity, EntityInputHandler as _, TestAppContext};
     use serde_json::json;
     use std::path::PathBuf;
     use std::sync::Arc;
@@ -2040,6 +2277,66 @@ mod tests {
                 editor.update(cx, |editor, cx| {
                     editor.edit([(MultiBufferOffset(0)..MultiBufferOffset(0), "Done: ")], cx);
                 });
+                assert!(active_item.is_dirty(cx));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    async fn rendered_editor_input_handler_edits_source_buffer(cx: &mut TestAppContext) {
+        let app_state = init_test(cx);
+        app_state
+            .fs
+            .as_fake()
+            .insert_tree(
+                path!("/dir"),
+                json!({
+                    "note.md": "Hello\n",
+                }),
+            )
+            .await;
+
+        cx.update(|cx| {
+            open_paths(
+                &[PathBuf::from(path!("/dir/note.md"))],
+                app_state.clone(),
+                workspace::OpenOptions::default(),
+                cx,
+            )
+        })
+        .await
+        .unwrap();
+        cx.run_until_parked();
+
+        let multi_workspace = cx.update(|cx| cx.windows()[0].downcast::<MultiWorkspace>().unwrap());
+        multi_workspace
+            .update(cx, |multi_workspace, window, cx| {
+                multi_workspace.workspace().update(cx, |workspace, cx| {
+                    let editor: Entity<Editor> = workspace
+                        .active_item(cx)
+                        .and_then(|item| item.act_as::<Editor>(cx))
+                        .unwrap();
+                    MarkdownPreviewView::replace_active_item_with_rendered_editor(
+                        workspace, editor, window, cx,
+                    );
+                })
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        multi_workspace
+            .update(cx, |multi_workspace, window, cx| {
+                let workspace = multi_workspace.workspace().read(cx);
+                let active_item = workspace.active_item(cx).unwrap();
+                let rendered_editor = active_item.downcast::<MarkdownPreviewView>().unwrap();
+                rendered_editor.update(cx, |rendered_editor, cx| {
+                    rendered_editor.replace_text_in_range(None, "Rendered ", window, cx);
+                });
+
+                let editor: Entity<Editor> = active_item.act_as::<Editor>(cx).unwrap();
+                let buffer = editor.read(cx).buffer().read(cx).as_singleton().unwrap();
+                let text = buffer.read(cx).snapshot().text();
+                assert_eq!(text, "Rendered Hello\n");
                 assert!(active_item.is_dirty(cx));
             })
             .unwrap();

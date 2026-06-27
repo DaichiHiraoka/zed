@@ -673,9 +673,13 @@ for same-tab rendered Markdown editing:
   the Markdown file.
 - Clicking rendered text in `RenderedEditor` mode moves the hidden source
   editor cursor to the corresponding Markdown source offset.
+- Rendered mode registers a GPUI input handler while focused, so text input and
+  IME composition are routed through the hidden source `Editor` and edit the
+  Markdown buffer rather than a detached preview copy.
 - Task checkbox toggles continue to edit the source Markdown range directly.
-- Focused tests verify same-tab replacement/restoration and dirty-state
-  propagation from the source buffer.
+- Focused tests verify same-tab replacement/restoration, dirty-state
+  propagation from the source buffer, and input-handler edits into the source
+  buffer.
 
 This status is intentionally not equivalent to Office Viewer yet. The following
 requirements remain incomplete and must be implemented before calling the
@@ -688,7 +692,7 @@ feature done:
   edit, list indent/outdent, and table row/column operations
 - copy/cut/paste semantics that distinguish rendered plain text from Markdown
   source
-- IME composition in rendered text
+- rendered IME candidate bounds and composition underline placement
 - rendered-mode find/replace over editable source mappings
 - source fallback editors for code blocks, Mermaid, math, raw HTML, and other
   lossy blocks
