@@ -723,6 +723,7 @@ impl MarkdownPreviewView {
     fn move_cursor_to_source_index(
         editor: &Entity<Editor>,
         source_index: usize,
+        focus_editor: bool,
         window: &mut Window,
         cx: &mut App,
     ) {
@@ -734,7 +735,9 @@ impl MarkdownPreviewView {
                 cx,
                 |selections| selections.select_ranges(vec![selection]),
             );
-            window.focus(&editor.focus_handle(cx), cx);
+            if focus_editor {
+                window.focus(&editor.focus_handle(cx), cx);
+            }
         });
     }
 
@@ -1005,10 +1008,27 @@ impl MarkdownPreviewView {
             let editor_for_checkbox = active_editor.clone();
             let view_handle = cx.entity().downgrade();
             let rendered_editor_mode = self.mode == MarkdownPreviewMode::RenderedEditor;
+            let rendered_editor_focus_handle = self.focus_handle.clone();
             markdown_element = markdown_element
                 .on_source_click(move |source_index, click_count, window, cx| {
-                    if rendered_editor_mode || click_count == 2 {
-                        Self::move_cursor_to_source_index(&active_editor, source_index, window, cx);
+                    if rendered_editor_mode {
+                        Self::move_cursor_to_source_index(
+                            &active_editor,
+                            source_index,
+                            false,
+                            window,
+                            cx,
+                        );
+                        window.focus(&rendered_editor_focus_handle, cx);
+                        true
+                    } else if click_count == 2 {
+                        Self::move_cursor_to_source_index(
+                            &active_editor,
+                            source_index,
+                            true,
+                            window,
+                            cx,
+                        );
                         true
                     } else {
                         false
@@ -1095,6 +1115,7 @@ fn handle_url_click(
                         .active_editor
                         .as_ref()
                         .map(|state| state.editor.clone());
+                    let focus_editor = view.read(cx).mode != MarkdownPreviewMode::RenderedEditor;
 
                     let source_index =
                         markdown.update(cx, |markdown, cx| markdown.scroll_to_heading(&slug, cx));
@@ -1104,6 +1125,7 @@ fn handle_url_click(
                             MarkdownPreviewView::move_cursor_to_source_index(
                                 &editor,
                                 source_index,
+                                focus_editor,
                                 window,
                                 cx,
                             );

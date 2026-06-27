@@ -679,6 +679,9 @@ for same-tab rendered Markdown editing:
 - Hidden source `Editor` selections are synchronized into the Markdown renderer
   selection state, which lets the rendered surface reuse the existing
   source-range selection highlight machinery.
+- Empty renderer selections paint a caret at the mapped source position, and
+  rendered-mode clicks keep focus on the rendered view while moving the hidden
+  source editor cursor.
 - Task checkbox toggles continue to edit the source Markdown range directly.
 - Focused tests verify same-tab replacement/restoration, dirty-state
   propagation from the source buffer, and input-handler edits into the source
@@ -688,7 +691,6 @@ This status is intentionally not equivalent to Office Viewer yet. The following
 requirements remain incomplete and must be implemented before calling the
 feature done:
 
-- a visible rendered caret and rendered selection model
 - typing directly into rendered paragraphs, headings, list items, table cells,
   and link labels
 - source-preserving rich edit commands such as bold, italic, heading level, link

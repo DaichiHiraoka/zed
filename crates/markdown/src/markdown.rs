@@ -36,7 +36,7 @@ use gpui::{
     ImageFormat, ImageSource, KeyContext, Length, MouseButton, MouseDownEvent, MouseEvent,
     MouseMoveEvent, MouseUpEvent, Point, ScrollHandle, Stateful, StrikethroughStyle,
     StyleRefinement, StyledImage, StyledText, Subscription, Task, TextAlign, TextLayout, TextRun,
-    TextStyle, TextStyleRefinement, WrappedLineLayout, actions, img, point, quad,
+    TextStyle, TextStyleRefinement, WrappedLineLayout, actions, img, point, quad, size,
 };
 use language::{CharClassifier, Language, LanguageRegistry, Rope};
 use parser::CodeBlockMetadata;
@@ -1703,6 +1703,25 @@ impl MarkdownElement {
 
     fn paint_selection(&self, rendered_text: &RenderedText, window: &mut Window, cx: &mut App) {
         let selection = self.markdown.read(cx).selection.clone();
+        if selection.start == selection.end {
+            if let Some((position, line_height)) =
+                rendered_text.position_for_source_index(selection.start)
+            {
+                window.paint_quad(quad(
+                    Bounds {
+                        origin: position,
+                        size: size(px(1.), line_height),
+                    },
+                    Pixels::ZERO,
+                    cx.theme().colors().text_accent,
+                    Edges::default(),
+                    Hsla::transparent_black(),
+                    BorderStyle::default(),
+                ));
+            }
+            return;
+        }
+
         Self::paint_highlight_range(
             selection.start,
             selection.end,
