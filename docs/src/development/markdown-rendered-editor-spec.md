@@ -652,6 +652,48 @@ The highest-risk implementation area is not rendering Markdown. It is editing
 rendered text while preserving Markdown source syntax and Zed's editor item
 contracts.
 
+## Current Branch Status
+
+Branch `docs/markdown-rendered-editor-spec` contains the Milestone 1 foundation
+for same-tab rendered Markdown editing:
+
+- `markdown::OpenRenderedEditor` replaces the active Markdown source `Editor`
+  item with a `MarkdownPreviewView` in `RenderedEditor` mode in the same pane
+  and at the same tab index.
+- `markdown::OpenSourceEditor` restores the hidden source `Editor` for the same
+  Markdown buffer.
+- `markdown::ToggleRenderedEditor` switches between those two states.
+- `ctrl-shift-m` on Windows/Linux and `cmd-shift-m` on macOS toggle rendered
+  mode without replacing the existing preview shortcuts.
+- Rendered mode delegates tab title, icon, tooltip, project path, dirty state,
+  capability, save, save-as, reload, read-only toggle, conflict/deleted-file
+  state, navigation, and deactivation behavior to the hidden source `Editor`.
+- Rendered mode keeps the item buffer kind as `Singleton` so pane deduplication,
+  dirty checks, close prompts, and save behavior continue to treat the tab as
+  the Markdown file.
+- Clicking rendered text in `RenderedEditor` mode moves the hidden source
+  editor cursor to the corresponding Markdown source offset.
+- Task checkbox toggles continue to edit the source Markdown range directly.
+- Focused tests verify same-tab replacement/restoration and dirty-state
+  propagation from the source buffer.
+
+This status is intentionally not equivalent to Office Viewer yet. The following
+requirements remain incomplete and must be implemented before calling the
+feature done:
+
+- a visible rendered caret and rendered selection model
+- typing directly into rendered paragraphs, headings, list items, table cells,
+  and link labels
+- source-preserving rich edit commands such as bold, italic, heading level, link
+  edit, list indent/outdent, and table row/column operations
+- copy/cut/paste semantics that distinguish rendered plain text from Markdown
+  source
+- IME composition in rendered text
+- rendered-mode find/replace over editable source mappings
+- source fallback editors for code blocks, Mermaid, math, raw HTML, and other
+  lossy blocks
+- split source/rendered mode inside one tab content area
+
 ## Open Design Questions
 
 - Should rendered mode replace the active `Editor` item in the pane, or should
