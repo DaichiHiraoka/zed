@@ -676,10 +676,13 @@ for same-tab rendered Markdown editing:
 - Rendered mode registers a GPUI input handler while focused, so text input and
   IME composition are routed through the hidden source `Editor` and edit the
   Markdown buffer rather than a detached preview copy.
+- Hidden source `Editor` selections are synchronized into the Markdown renderer
+  selection state, which lets the rendered surface reuse the existing
+  source-range selection highlight machinery.
 - Task checkbox toggles continue to edit the source Markdown range directly.
 - Focused tests verify same-tab replacement/restoration, dirty-state
   propagation from the source buffer, and input-handler edits into the source
-  buffer.
+  buffer, and renderer selection synchronization.
 
 This status is intentionally not equivalent to Office Viewer yet. The following
 requirements remain incomplete and must be implemented before calling the

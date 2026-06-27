@@ -816,6 +816,38 @@ impl Markdown {
         }
     }
 
+    pub fn set_selection_range(
+        &mut self,
+        range: Range<usize>,
+        reversed: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let end = self.source.len();
+        let start = range.start.min(end);
+        let end = range.end.min(end);
+        if self.selection.start == start
+            && self.selection.end == end
+            && self.selection.reversed == reversed
+            && !self.selection.pending
+        {
+            return;
+        }
+
+        self.selection = Selection {
+            start,
+            end,
+            reversed,
+            pending: false,
+            mode: SelectMode::Character,
+        };
+        cx.notify();
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn selection_range(&self) -> Range<usize> {
+        self.selection.start..self.selection.end
+    }
+
     pub fn set_search_highlights(
         &mut self,
         highlights: Vec<Range<usize>>,

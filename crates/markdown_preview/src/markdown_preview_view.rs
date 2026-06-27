@@ -525,15 +525,15 @@ impl MarkdownPreviewView {
                         cx.emit(MarkdownPreviewEvent::SourceFileHandleChanged);
                     }
                     EditorEvent::SelectionsChanged { .. } => {
-                        let (selection_start, editor_is_focused) =
-                            editor.update(cx, |editor, cx| {
-                                let index = Self::selected_source_index(editor, cx);
-                                let focused = editor.focus_handle(cx).is_focused(window);
-                                (index, focused)
-                            });
-                        if let Some(selection_start) = selection_start {
-                            this.sync_preview_to_source_index(
-                                selection_start,
+                        let (selection, editor_is_focused) = editor.update(cx, |editor, cx| {
+                            let selection = Self::selected_source_selection(editor, cx);
+                            let focused = editor.focus_handle(cx).is_focused(window);
+                            (selection, focused)
+                        });
+                        if let Some((selection_range, reversed)) = selection {
+                            this.sync_preview_to_source_selection(
+                                selection_range,
+                                reversed,
                                 editor_is_focused,
                                 cx,
                             );
@@ -650,17 +650,22 @@ impl MarkdownPreviewView {
                         .as_rope()
                         .to_string()
                         .into();
-                    let selection_start = Self::selected_source_index(editor, cx)?;
-                    Some((contents, selection_start))
+                    let selection = Self::selected_source_selection(editor, cx)?;
+                    Some((contents, selection))
                 })
             })?;
 
             view.update(cx, move |view, cx| {
-                if let Some((contents, selection_start)) = update {
+                if let Some((contents, (selection_range, reversed))) = update {
                     view.markdown.update(cx, |markdown, cx| {
                         markdown.reset(contents, cx);
                     });
-                    view.sync_preview_to_source_index(selection_start, should_reveal_selection, cx);
+                    view.sync_preview_to_source_selection(
+                        selection_range,
+                        reversed,
+                        should_reveal_selection,
+                        cx,
+                    );
                     cx.emit(SearchEvent::MatchesInvalidated);
                 }
                 view.pending_update_task = None;
@@ -669,37 +674,42 @@ impl MarkdownPreviewView {
         })
     }
 
-    fn selected_source_index(editor: &Editor, cx: &mut App) -> Option<usize> {
+    fn selected_source_selection(editor: &Editor, cx: &mut App) -> Option<(Range<usize>, bool)> {
         let display_snapshot = editor.display_snapshot(cx);
-        let source_offset = editor
+        let selection = editor
             .selections
             .last::<MultiBufferOffset>(&display_snapshot)
-            .range()
-            .start;
+            .clone();
         let buffer = editor.buffer().read(cx).as_singleton()?;
         let buffer_id = buffer.read(cx).remote_id();
-        let (buffer_snapshot, buffer_offset) = display_snapshot
-            .buffer_snapshot()
-            .point_to_buffer_offset(source_offset)?;
 
-        if buffer_snapshot.remote_id() == buffer_id {
-            Some(buffer_offset.0)
-        } else {
-            None
+        let snapshot = display_snapshot.buffer_snapshot();
+        let (start_buffer_snapshot, start_offset) =
+            snapshot.point_to_buffer_offset(selection.start)?;
+        let (end_buffer_snapshot, end_offset) = snapshot.point_to_buffer_offset(selection.end)?;
+
+        if start_buffer_snapshot.remote_id() != buffer_id
+            || end_buffer_snapshot.remote_id() != buffer_id
+        {
+            return None;
         }
+
+        Some((start_offset.0..end_offset.0, selection.reversed))
     }
 
-    fn sync_preview_to_source_index(
+    fn sync_preview_to_source_selection(
         &mut self,
-        source_index: usize,
+        source_range: Range<usize>,
+        reversed: bool,
         reveal: bool,
         cx: &mut Context<Self>,
     ) {
-        self.active_source_index = Some(source_index);
+        self.active_source_index = Some(source_range.start);
         self.sync_active_root_block(cx);
         self.markdown.update(cx, |markdown, cx| {
+            markdown.set_selection_range(source_range.clone(), reversed, cx);
             if reveal {
-                markdown.request_autoscroll_to_source_index(source_index, cx);
+                markdown.request_autoscroll_to_source_index(source_range.start, cx);
             }
         });
     }
@@ -2116,7 +2126,7 @@ mod tests {
     use crate::markdown_preview_view::Resource;
     use crate::markdown_preview_view::resolve_preview_image;
     use buffer_diff::BufferDiff;
-    use editor::{Editor, MultiBufferOffset};
+    use editor::{Editor, MultiBufferOffset, SelectionEffects};
     use gpui::{AppContext as _, Entity, EntityInputHandler as _, TestAppContext};
     use serde_json::json;
     use std::path::PathBuf;
@@ -2338,6 +2348,75 @@ mod tests {
                 let text = buffer.read(cx).snapshot().text();
                 assert_eq!(text, "Rendered Hello\n");
                 assert!(active_item.is_dirty(cx));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    async fn rendered_editor_syncs_source_selection_to_markdown_renderer(cx: &mut TestAppContext) {
+        let app_state = init_test(cx);
+        app_state
+            .fs
+            .as_fake()
+            .insert_tree(
+                path!("/dir"),
+                json!({
+                    "note.md": "Hello rendered selection\n",
+                }),
+            )
+            .await;
+
+        cx.update(|cx| {
+            open_paths(
+                &[PathBuf::from(path!("/dir/note.md"))],
+                app_state.clone(),
+                workspace::OpenOptions::default(),
+                cx,
+            )
+        })
+        .await
+        .unwrap();
+        cx.run_until_parked();
+
+        let multi_workspace = cx.update(|cx| cx.windows()[0].downcast::<MultiWorkspace>().unwrap());
+        multi_workspace
+            .update(cx, |multi_workspace, window, cx| {
+                multi_workspace.workspace().update(cx, |workspace, cx| {
+                    let editor: Entity<Editor> = workspace
+                        .active_item(cx)
+                        .and_then(|item| item.act_as::<Editor>(cx))
+                        .unwrap();
+                    MarkdownPreviewView::replace_active_item_with_rendered_editor(
+                        workspace, editor, window, cx,
+                    );
+                })
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        multi_workspace
+            .update(cx, |multi_workspace, window, cx| {
+                let workspace = multi_workspace.workspace().read(cx);
+                let active_item = workspace.active_item(cx).unwrap();
+                let editor: Entity<Editor> = active_item.act_as::<Editor>(cx).unwrap();
+                editor.update(cx, |editor, cx| {
+                    editor.change_selections(SelectionEffects::no_scroll(), window, cx, |s| {
+                        s.select_ranges([MultiBufferOffset(0)..MultiBufferOffset(5)]);
+                    });
+                });
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        multi_workspace
+            .update(cx, |multi_workspace, _, cx| {
+                let workspace = multi_workspace.workspace().read(cx);
+                let active_item = workspace.active_item(cx).unwrap();
+                let rendered_editor = active_item.downcast::<MarkdownPreviewView>().unwrap();
+                assert_eq!(
+                    rendered_editor.read(cx).markdown.read(cx).selected_text(),
+                    Some("Hello".to_string())
+                );
             })
             .unwrap();
     }
