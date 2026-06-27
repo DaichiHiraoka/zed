@@ -42,7 +42,21 @@ actions!(
         /// Toggles emphasis around the rendered/source Markdown selection.
         ToggleEmphasis,
         /// Toggles inline code around the rendered/source Markdown selection.
-        ToggleInlineCode
+        ToggleInlineCode,
+        /// Converts selected Markdown lines to paragraph text.
+        SetParagraph,
+        /// Converts selected Markdown lines to heading level 1.
+        SetHeading1,
+        /// Converts selected Markdown lines to heading level 2.
+        SetHeading2,
+        /// Converts selected Markdown lines to heading level 3.
+        SetHeading3,
+        /// Converts selected Markdown lines to heading level 4.
+        SetHeading4,
+        /// Converts selected Markdown lines to heading level 5.
+        SetHeading5,
+        /// Converts selected Markdown lines to heading level 6.
+        SetHeading6
     ]
 );
 

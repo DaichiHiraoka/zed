@@ -44,7 +44,8 @@ use zed_actions::{DecreaseBufferFontSize, IncreaseBufferFontSize, ResetBufferFon
 use crate::markdown_preview_settings::MarkdownPreviewSettings;
 use crate::{
     OpenFollowingPreview, OpenPreview, OpenPreviewToTheSide, OpenRenderedEditor, OpenSourceEditor,
-    ScrollDown, ScrollDownByItem, ToggleEmphasis, ToggleInlineCode, ToggleRenderedEditor,
+    ScrollDown, ScrollDownByItem, SetHeading1, SetHeading2, SetHeading3, SetHeading4, SetHeading5,
+    SetHeading6, SetParagraph, ToggleEmphasis, ToggleInlineCode, ToggleRenderedEditor,
     ToggleStrong,
 };
 use crate::{ScrollPageDown, ScrollPageUp, ScrollToBottom, ScrollToTop, ScrollUp, ScrollUpByItem};
@@ -957,6 +958,69 @@ impl MarkdownPreviewView {
         self.apply_inline_delimiter_to_rendered_selection("`", window, cx);
     }
 
+    fn rendered_set_paragraph(
+        &mut self,
+        _: &SetParagraph,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_heading_level_to_rendered_selection(None, window, cx);
+    }
+
+    fn rendered_set_heading_1(
+        &mut self,
+        _: &SetHeading1,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_heading_level_to_rendered_selection(Some(1), window, cx);
+    }
+
+    fn rendered_set_heading_2(
+        &mut self,
+        _: &SetHeading2,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_heading_level_to_rendered_selection(Some(2), window, cx);
+    }
+
+    fn rendered_set_heading_3(
+        &mut self,
+        _: &SetHeading3,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_heading_level_to_rendered_selection(Some(3), window, cx);
+    }
+
+    fn rendered_set_heading_4(
+        &mut self,
+        _: &SetHeading4,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_heading_level_to_rendered_selection(Some(4), window, cx);
+    }
+
+    fn rendered_set_heading_5(
+        &mut self,
+        _: &SetHeading5,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_heading_level_to_rendered_selection(Some(5), window, cx);
+    }
+
+    fn rendered_set_heading_6(
+        &mut self,
+        _: &SetHeading6,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_heading_level_to_rendered_selection(Some(6), window, cx);
+    }
+
     fn apply_inline_delimiter_to_rendered_selection(
         &mut self,
         delimiter: &'static str,
@@ -1059,6 +1123,106 @@ impl MarkdownPreviewView {
         });
 
         self.update_markdown_from_active_editor(true, false, window, cx);
+    }
+
+    fn apply_heading_level_to_rendered_selection(
+        &mut self,
+        level: Option<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.mode != MarkdownPreviewMode::RenderedEditor {
+            return;
+        }
+
+        let Some(editor) = self
+            .active_editor
+            .as_ref()
+            .map(|editor_state| editor_state.editor.clone())
+        else {
+            return;
+        };
+
+        editor.update(cx, |editor, cx| {
+            let Some((selection_range, _)) = Self::selected_source_selection(editor, cx) else {
+                return;
+            };
+            let source = editor
+                .buffer()
+                .read(cx)
+                .as_singleton()
+                .map(|buffer| buffer.read(cx).snapshot().text())
+                .unwrap_or_default();
+
+            let line_range = Self::selected_line_range(&source, selection_range);
+            let replacement = source[line_range.clone()]
+                .split('\n')
+                .map(|line| Self::line_with_heading_level(line, level))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let replacement_len = replacement.len();
+
+            editor.edit(
+                [(
+                    MultiBufferOffset(line_range.start)..MultiBufferOffset(line_range.end),
+                    replacement,
+                )],
+                cx,
+            );
+            editor.change_selections(SelectionEffects::no_scroll(), window, cx, |selections| {
+                selections.select_ranges([MultiBufferOffset(line_range.start)
+                    ..MultiBufferOffset(line_range.start + replacement_len)]);
+            });
+        });
+
+        self.update_markdown_from_active_editor(true, false, window, cx);
+    }
+
+    fn selected_line_range(source: &str, selection_range: Range<usize>) -> Range<usize> {
+        let start = source[..selection_range.start.min(source.len())]
+            .rfind('\n')
+            .map(|ix| ix + 1)
+            .unwrap_or(0);
+        let selection_end = if selection_range.end > selection_range.start {
+            selection_range.end.saturating_sub(1)
+        } else {
+            selection_range.end
+        }
+        .min(source.len());
+        let end = source[selection_end..]
+            .find('\n')
+            .map(|ix| selection_end + ix)
+            .unwrap_or(source.len());
+        start..end
+    }
+
+    fn line_with_heading_level(line: &str, level: Option<usize>) -> String {
+        let indent_len = line
+            .bytes()
+            .take_while(|byte| matches!(byte, b' ' | b'\t'))
+            .count();
+        let (indent, rest) = line.split_at(indent_len);
+        let heading_marker_len = rest
+            .bytes()
+            .take_while(|byte| *byte == b'#')
+            .take(6)
+            .count();
+        let content = if heading_marker_len > 0
+            && rest
+                .as_bytes()
+                .get(heading_marker_len)
+                .is_none_or(|byte| matches!(*byte, b' ' | b'\t'))
+        {
+            rest[heading_marker_len..].trim_start_matches([' ', '\t'])
+        } else {
+            rest
+        };
+
+        if let Some(level) = level {
+            format!("{}{} {}", indent, "#".repeat(level.clamp(1, 6)), content)
+        } else {
+            format!("{indent}{content}")
+        }
     }
 
     fn scroll_by_amount(&self, distance: Pixels) {
@@ -1784,6 +1948,13 @@ impl Render for MarkdownPreviewView {
             .on_action(cx.listener(MarkdownPreviewView::rendered_toggle_strong))
             .on_action(cx.listener(MarkdownPreviewView::rendered_toggle_emphasis))
             .on_action(cx.listener(MarkdownPreviewView::rendered_toggle_inline_code))
+            .on_action(cx.listener(MarkdownPreviewView::rendered_set_paragraph))
+            .on_action(cx.listener(MarkdownPreviewView::rendered_set_heading_1))
+            .on_action(cx.listener(MarkdownPreviewView::rendered_set_heading_2))
+            .on_action(cx.listener(MarkdownPreviewView::rendered_set_heading_3))
+            .on_action(cx.listener(MarkdownPreviewView::rendered_set_heading_4))
+            .on_action(cx.listener(MarkdownPreviewView::rendered_set_heading_5))
+            .on_action(cx.listener(MarkdownPreviewView::rendered_set_heading_6))
             .on_action(cx.listener(MarkdownPreviewView::scroll_page_up))
             .on_action(cx.listener(MarkdownPreviewView::scroll_page_down))
             .on_action(cx.listener(MarkdownPreviewView::scroll_up))
@@ -2407,7 +2578,9 @@ mod tests {
     use crate::markdown_preview_view::ImageSource;
     use crate::markdown_preview_view::Resource;
     use crate::markdown_preview_view::resolve_preview_image;
-    use crate::{ToggleEmphasis, ToggleInlineCode, ToggleStrong};
+    use crate::{
+        SetHeading2, SetHeading4, SetParagraph, ToggleEmphasis, ToggleInlineCode, ToggleStrong,
+    };
     use buffer_diff::BufferDiff;
     use editor::actions::{Backspace, Newline, Undo};
     use editor::{Editor, MultiBufferOffset, SelectionEffects};
@@ -2899,6 +3072,106 @@ mod tests {
             })
             .unwrap();
         assert_eq!(source_text(multi_workspace, cx), "`Hello`");
+    }
+
+    #[gpui::test]
+    async fn rendered_editor_sets_heading_levels(cx: &mut TestAppContext) {
+        let app_state = init_test(cx);
+        app_state
+            .fs
+            .as_fake()
+            .insert_tree(
+                path!("/dir"),
+                json!({
+                    "note.md": "Title\nBody\n",
+                }),
+            )
+            .await;
+
+        cx.update(|cx| {
+            open_paths(
+                &[PathBuf::from(path!("/dir/note.md"))],
+                app_state.clone(),
+                workspace::OpenOptions::default(),
+                cx,
+            )
+        })
+        .await
+        .unwrap();
+        cx.run_until_parked();
+
+        let multi_workspace = cx.update(|cx| cx.windows()[0].downcast::<MultiWorkspace>().unwrap());
+        multi_workspace
+            .update(cx, |multi_workspace, window, cx| {
+                multi_workspace.workspace().update(cx, |workspace, cx| {
+                    let editor: Entity<Editor> = workspace
+                        .active_item(cx)
+                        .and_then(|item| item.act_as::<Editor>(cx))
+                        .unwrap();
+                    editor.update(cx, |editor, cx| {
+                        editor.change_selections(SelectionEffects::no_scroll(), window, cx, |s| {
+                            s.select_ranges([MultiBufferOffset(0)..MultiBufferOffset(5)]);
+                        });
+                    });
+                    MarkdownPreviewView::replace_active_item_with_rendered_editor(
+                        workspace, editor, window, cx,
+                    );
+                })
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        let source_text = |multi_workspace: WindowHandle<MultiWorkspace>,
+                           cx: &mut TestAppContext| {
+            multi_workspace
+                .update(cx, |multi_workspace, _, cx| {
+                    let workspace = multi_workspace.workspace().read(cx);
+                    let active_item = workspace.active_item(cx).unwrap();
+                    let editor: Entity<Editor> = active_item.act_as::<Editor>(cx).unwrap();
+                    let buffer = editor.read(cx).buffer().read(cx).as_singleton().unwrap();
+                    buffer.read(cx).snapshot().text()
+                })
+                .unwrap()
+        };
+
+        multi_workspace
+            .update(cx, |multi_workspace, window, cx| {
+                let workspace = multi_workspace.workspace().read(cx);
+                let active_item = workspace.active_item(cx).unwrap();
+                let rendered_editor = active_item.downcast::<MarkdownPreviewView>().unwrap();
+                rendered_editor.update(cx, |rendered_editor, cx| {
+                    rendered_editor.rendered_set_heading_2(&SetHeading2, window, cx);
+                });
+            })
+            .unwrap();
+        assert_eq!(source_text(multi_workspace.clone(), cx), "## Title\nBody\n");
+
+        multi_workspace
+            .update(cx, |multi_workspace, window, cx| {
+                let workspace = multi_workspace.workspace().read(cx);
+                let active_item = workspace.active_item(cx).unwrap();
+                let rendered_editor = active_item.downcast::<MarkdownPreviewView>().unwrap();
+                rendered_editor.update(cx, |rendered_editor, cx| {
+                    rendered_editor.rendered_set_heading_4(&SetHeading4, window, cx);
+                });
+            })
+            .unwrap();
+        assert_eq!(
+            source_text(multi_workspace.clone(), cx),
+            "#### Title\nBody\n"
+        );
+
+        multi_workspace
+            .update(cx, |multi_workspace, window, cx| {
+                let workspace = multi_workspace.workspace().read(cx);
+                let active_item = workspace.active_item(cx).unwrap();
+                let rendered_editor = active_item.downcast::<MarkdownPreviewView>().unwrap();
+                rendered_editor.update(cx, |rendered_editor, cx| {
+                    rendered_editor.rendered_set_paragraph(&SetParagraph, window, cx);
+                });
+            })
+            .unwrap();
+        assert_eq!(source_text(multi_workspace, cx), "Title\nBody\n");
     }
 
     #[test]

@@ -687,6 +687,8 @@ for same-tab rendered Markdown editing:
   indent, outdent, paste, undo, and redo.
 - Rendered mode supports source-preserving inline formatting actions for the
   active source selection: strong emphasis, emphasis, and inline code.
+- Rendered mode supports source-preserving block style actions for selected
+  lines: paragraph and heading levels 1 through 6.
 - Task checkbox toggles continue to edit the source Markdown range directly.
 - Focused tests verify same-tab replacement/restoration, dirty-state
   propagation from the source buffer, and input-handler edits into the source
@@ -698,8 +700,8 @@ feature done:
 
 - typing directly into rendered paragraphs, headings, list items, table cells,
   and link labels
-- source-preserving rich edit commands such as heading level, link edit,
-  rendered list controls, and table row/column operations
+- source-preserving rich edit commands such as link edit, rendered list
+  controls, and table row/column operations
 - copy/cut/paste semantics that distinguish rendered plain text from Markdown
   source
 - rendered IME candidate bounds and composition underline placement
