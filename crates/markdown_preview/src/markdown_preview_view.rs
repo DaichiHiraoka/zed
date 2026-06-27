@@ -10,11 +10,12 @@ use anyhow::{Context as _, Result};
 use editor::scroll::Autoscroll;
 use editor::{Editor, EditorEvent, MultiBufferOffset, SelectionEffects};
 use gpui::{
-    App, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable, ImageSource,
-    InteractiveElement, IntoElement, IsZero, Pixels, Render, Resource, RetainAllImageCache,
-    ScrollHandle, SharedString, SharedUri, Subscription, Task, WeakEntity, Window, point, px,
+    App, ClipboardItem, Context, Entity, EntityId, EventEmitter, FocusHandle, Focusable,
+    ImageSource, InteractiveElement, IntoElement, IsZero, Pixels, Render, Resource,
+    RetainAllImageCache, ScrollHandle, SharedString, SharedUri, Subscription, Task, WeakEntity,
+    Window, point, px,
 };
-use language::LanguageRegistry;
+use language::{Capability, LanguageRegistry};
 use markdown::{
     CodeBlockRenderer, CopyButtonVisibility, Markdown, MarkdownElement, MarkdownFont,
     MarkdownOptions, MarkdownStyle,
@@ -37,7 +38,8 @@ use zed_actions::{DecreaseBufferFontSize, IncreaseBufferFontSize, ResetBufferFon
 
 use crate::markdown_preview_settings::MarkdownPreviewSettings;
 use crate::{
-    OpenFollowingPreview, OpenPreview, OpenPreviewToTheSide, ScrollDown, ScrollDownByItem,
+    OpenFollowingPreview, OpenPreview, OpenPreviewToTheSide, OpenRenderedEditor, OpenSourceEditor,
+    ScrollDown, ScrollDownByItem, ToggleRenderedEditor,
 };
 use crate::{ScrollPageDown, ScrollPageUp, ScrollToBottom, ScrollToTop, ScrollUp, ScrollUpByItem};
 
@@ -63,6 +65,9 @@ pub enum MarkdownPreviewMode {
     Default,
     /// The preview will "follow" the currently active editor.
     Follow,
+    /// The rendered document replaces the source editor item in the pane while
+    /// keeping the same backing Markdown buffer.
+    RenderedEditor,
 }
 
 impl MarkdownPreviewMode {
@@ -70,12 +75,14 @@ impl MarkdownPreviewMode {
         match self {
             Self::Default => 0,
             Self::Follow => 1,
+            Self::RenderedEditor => 2,
         }
     }
 
     fn from_db(value: i64) -> Self {
         match value {
             1 => Self::Follow,
+            2 => Self::RenderedEditor,
             _ => Self::Default,
         }
     }
@@ -90,6 +97,7 @@ struct EditorState {
 pub enum MarkdownPreviewEvent {
     SourceEditorChanged,
     SourceFileHandleChanged,
+    SourceBufferChanged,
 }
 
 impl MarkdownPreviewView {
@@ -161,6 +169,90 @@ impl MarkdownPreviewView {
                 cx.notify();
             }
         });
+
+        workspace.register_action(move |workspace, _: &OpenRenderedEditor, window, cx| {
+            if let Some(editor) = Self::resolve_active_item_as_markdown_editor(workspace, cx) {
+                Self::replace_active_item_with_rendered_editor(workspace, editor, window, cx);
+            }
+        });
+
+        workspace.register_action(move |workspace, _: &OpenSourceEditor, window, cx| {
+            Self::replace_active_rendered_editor_with_source(workspace, window, cx);
+        });
+
+        workspace.register_action(move |workspace, _: &ToggleRenderedEditor, window, cx| {
+            if Self::replace_active_rendered_editor_with_source(workspace, window, cx) {
+                return;
+            }
+
+            if let Some(editor) = Self::resolve_active_item_as_markdown_editor(workspace, cx) {
+                Self::replace_active_item_with_rendered_editor(workspace, editor, window, cx);
+            }
+        });
+    }
+
+    fn replace_active_item_with_rendered_editor(
+        workspace: &mut Workspace,
+        editor: Entity<Editor>,
+        window: &mut Window,
+        cx: &mut Context<Workspace>,
+    ) {
+        let view = Self::create_rendered_markdown_editor(workspace, editor, window, cx);
+        let active_pane = workspace.active_pane().clone();
+        active_pane.update(cx, |pane, cx| {
+            let destination_index = pane.active_item_index();
+            if let Some(active_item) = pane.active_item() {
+                pane.remove_item(active_item.item_id(), false, false, window, cx);
+            }
+            pane.add_item(
+                Box::new(view.clone()),
+                true,
+                true,
+                Some(destination_index),
+                window,
+                cx,
+            );
+        });
+        cx.notify();
+    }
+
+    fn replace_active_rendered_editor_with_source(
+        workspace: &mut Workspace,
+        window: &mut Window,
+        cx: &mut Context<Workspace>,
+    ) -> bool {
+        let Some(rendered_editor) = workspace
+            .active_item(cx)
+            .and_then(|item| item.downcast::<MarkdownPreviewView>())
+            .filter(|view| view.read(cx).mode == MarkdownPreviewMode::RenderedEditor)
+        else {
+            return false;
+        };
+
+        let Some(editor) = rendered_editor
+            .read(cx)
+            .active_editor
+            .as_ref()
+            .map(|state| state.editor.clone())
+        else {
+            return false;
+        };
+
+        let active_pane = workspace.active_pane().clone();
+        active_pane.update(cx, |pane, cx| {
+            let destination_index = pane.active_item_index();
+            pane.remove_item(rendered_editor.entity_id(), false, false, window, cx);
+            pane.add_item(
+                Box::new(editor.clone()),
+                true,
+                true,
+                Some(destination_index),
+                window,
+                cx,
+            );
+        });
+        cx.notify();
+        true
     }
 
     fn find_existing_independent_preview_item_idx(
@@ -245,6 +337,24 @@ impl MarkdownPreviewView {
         )
     }
 
+    fn create_rendered_markdown_editor(
+        workspace: &mut Workspace,
+        editor: Entity<Editor>,
+        window: &mut Window,
+        cx: &mut Context<Workspace>,
+    ) -> Entity<MarkdownPreviewView> {
+        let language_registry = workspace.project().read(cx).languages().clone();
+        let workspace_handle = workspace.weak_handle();
+        MarkdownPreviewView::new(
+            MarkdownPreviewMode::RenderedEditor,
+            editor,
+            workspace_handle,
+            language_registry,
+            window,
+            cx,
+        )
+    }
+
     pub fn new(
         mode: MarkdownPreviewMode,
         active_editor: Entity<Editor>,
@@ -302,7 +412,7 @@ impl MarkdownPreviewView {
                         log::error!("Failed to listen to workspace updates");
                     }
                 }
-                MarkdownPreviewMode::Default => {
+                MarkdownPreviewMode::Default | MarkdownPreviewMode::RenderedEditor => {
                     // After workspace restoration the bound editor may be an orphan that
                     // wraps the right buffer but isn't the canonical Editor instance in
                     // any pane. Re-binding to the workspace's editor for our buffer is
@@ -403,6 +513,9 @@ impl MarkdownPreviewView {
                     | EditorEvent::DirtyChanged
                     | EditorEvent::BuffersEdited { .. } => {
                         this.update_markdown_from_active_editor(true, false, window, cx);
+                        if this.mode == MarkdownPreviewMode::RenderedEditor {
+                            cx.emit(MarkdownPreviewEvent::SourceBufferChanged);
+                        }
                     }
                     EditorEvent::FileHandleChanged => {
                         this.base_directory =
@@ -1100,11 +1213,26 @@ impl Item for MarkdownPreviewView {
         }
     }
 
-    fn tab_icon(&self, _window: &Window, _cx: &App) -> Option<Icon> {
+    fn tab_icon(&self, window: &Window, cx: &App) -> Option<Icon> {
+        if self.mode == MarkdownPreviewMode::RenderedEditor {
+            return self
+                .active_editor
+                .as_ref()
+                .and_then(|state| state.editor.read(cx).tab_icon(window, cx));
+        }
+
         Some(Icon::new(IconName::FileDoc))
     }
 
-    fn tab_content_text(&self, _detail: usize, cx: &App) -> SharedString {
+    fn tab_content_text(&self, detail: usize, cx: &App) -> SharedString {
+        if self.mode == MarkdownPreviewMode::RenderedEditor {
+            return self
+                .active_editor
+                .as_ref()
+                .map(|state| state.editor.read(cx).tab_content_text(detail, cx))
+                .unwrap_or_else(|| SharedString::from("Markdown"));
+        }
+
         self.active_editor
             .as_ref()
             .map(|editor_state| {
@@ -1113,6 +1241,39 @@ impl Item for MarkdownPreviewView {
                 format!("Preview {}", title).into()
             })
             .unwrap_or_else(|| SharedString::from("Markdown Preview"))
+    }
+
+    fn suggested_filename(&self, cx: &App) -> SharedString {
+        self.active_editor
+            .as_ref()
+            .map(|state| state.editor.read(cx).suggested_filename(cx))
+            .unwrap_or_else(|| self.tab_content_text(0, cx))
+    }
+
+    fn tab_content(
+        &self,
+        params: workspace::item::TabContentParams,
+        window: &Window,
+        cx: &App,
+    ) -> AnyElement {
+        if self.mode == MarkdownPreviewMode::RenderedEditor {
+            return self
+                .active_editor
+                .as_ref()
+                .map(|state| state.editor.read(cx).tab_content(params, window, cx))
+                .unwrap_or_else(|| Label::new("Markdown").into_any_element());
+        }
+
+        let text = self.tab_content_text(params.detail.unwrap_or_default(), cx);
+        Label::new(text)
+            .color(params.text_color())
+            .into_any_element()
+    }
+
+    fn tab_tooltip_text(&self, cx: &App) -> Option<SharedString> {
+        self.active_editor
+            .as_ref()
+            .and_then(|state| state.editor.read(cx).tab_tooltip_text(cx))
     }
 
     fn telemetry_event_text(&self) -> Option<&'static str> {
@@ -1148,6 +1309,16 @@ impl Item for MarkdownPreviewView {
         self.active_editor
             .as_ref()
             .is_some_and(|editor_state| editor_state.editor.read(cx).can_save_as(cx))
+    }
+
+    fn for_each_project_item(
+        &self,
+        cx: &App,
+        f: &mut dyn FnMut(EntityId, &dyn project::ProjectItem),
+    ) {
+        if let Some(editor_state) = &self.active_editor {
+            editor_state.editor.read(cx).for_each_project_item(cx, f);
+        }
     }
 
     fn save(
@@ -1197,7 +1368,8 @@ impl Item for MarkdownPreviewView {
     fn to_item_events(event: &Self::Event, f: &mut dyn FnMut(workspace::item::ItemEvent)) {
         match event {
             MarkdownPreviewEvent::SourceEditorChanged
-            | MarkdownPreviewEvent::SourceFileHandleChanged => {
+            | MarkdownPreviewEvent::SourceFileHandleChanged
+            | MarkdownPreviewEvent::SourceBufferChanged => {
                 f(workspace::item::ItemEvent::UpdateTab);
                 f(workspace::item::ItemEvent::UpdateBreadcrumbs);
             }
@@ -1206,6 +1378,45 @@ impl Item for MarkdownPreviewView {
 
     fn buffer_kind(&self, _cx: &App) -> ItemBufferKind {
         ItemBufferKind::Singleton
+    }
+
+    fn active_project_path(&self, cx: &App) -> Option<ProjectPath> {
+        self.active_editor
+            .as_ref()
+            .and_then(|state| state.editor.read(cx).active_project_path(cx))
+    }
+
+    fn is_dirty(&self, cx: &App) -> bool {
+        self.active_editor
+            .as_ref()
+            .is_some_and(|state| state.editor.read(cx).is_dirty(cx))
+    }
+
+    fn capability(&self, cx: &App) -> Capability {
+        self.active_editor
+            .as_ref()
+            .map(|state| state.editor.read(cx).capability(cx))
+            .unwrap_or(Capability::ReadWrite)
+    }
+
+    fn toggle_read_only(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(editor_state) = &self.active_editor {
+            editor_state
+                .editor
+                .update(cx, |editor, cx| Item::toggle_read_only(editor, window, cx));
+        }
+    }
+
+    fn has_deleted_file(&self, cx: &App) -> bool {
+        self.active_editor
+            .as_ref()
+            .is_some_and(|state| state.editor.read(cx).has_deleted_file(cx))
+    }
+
+    fn has_conflict(&self, cx: &App) -> bool {
+        self.active_editor
+            .as_ref()
+            .is_some_and(|state| state.editor.read(cx).has_conflict(cx))
     }
 
     fn as_searchable(
@@ -1618,7 +1829,7 @@ mod tests {
     use crate::markdown_preview_view::Resource;
     use crate::markdown_preview_view::resolve_preview_image;
     use buffer_diff::BufferDiff;
-    use editor::Editor;
+    use editor::{Editor, MultiBufferOffset};
     use gpui::{AppContext as _, Entity, TestAppContext};
     use serde_json::json;
     use std::path::PathBuf;
@@ -1627,12 +1838,162 @@ mod tests {
     use util::path;
     use util::rel_path::{RelPath, rel_path};
     use util::test::TempTree;
-    use workspace::item::SerializableItem;
+    use workspace::item::{Item, ItemBufferKind, SerializableItem};
     use workspace::{
         AppState, ItemId, MultiWorkspace, SaveIntent, Workspace, WorkspaceId, open_paths,
     };
 
-    use super::MarkdownPreviewView;
+    use super::{MarkdownPreviewMode, MarkdownPreviewView};
+
+    #[gpui::test]
+    async fn rendered_editor_replaces_source_item_and_restores_it(cx: &mut TestAppContext) {
+        let app_state = init_test(cx);
+        app_state
+            .fs
+            .as_fake()
+            .insert_tree(
+                path!("/dir"),
+                json!({
+                    "README.md": "# Title\n\nBody\n",
+                }),
+            )
+            .await;
+
+        cx.update(|cx| {
+            open_paths(
+                &[PathBuf::from(path!("/dir/README.md"))],
+                app_state.clone(),
+                workspace::OpenOptions::default(),
+                cx,
+            )
+        })
+        .await
+        .unwrap();
+        cx.run_until_parked();
+
+        let multi_workspace = cx.update(|cx| cx.windows()[0].downcast::<MultiWorkspace>().unwrap());
+        let (source_buffer, source_title, source_project_path) = multi_workspace
+            .update(cx, |multi_workspace, window, cx| {
+                multi_workspace.workspace().update(cx, |workspace, cx| {
+                    let editor: Entity<Editor> = workspace
+                        .active_item(cx)
+                        .and_then(|item| item.act_as::<Editor>(cx))
+                        .unwrap();
+                    let source_buffer = editor.read(cx).buffer().read(cx).as_singleton().unwrap();
+                    let source_title = editor.read(cx).tab_content_text(0, cx);
+                    let source_project_path = editor.read(cx).active_project_path(cx).unwrap();
+
+                    MarkdownPreviewView::replace_active_item_with_rendered_editor(
+                        workspace, editor, window, cx,
+                    );
+
+                    (source_buffer, source_title, source_project_path)
+                })
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        multi_workspace
+            .update(cx, |multi_workspace, _, cx| {
+                let workspace = multi_workspace.workspace().read(cx);
+                let active_item = workspace.active_item(cx).unwrap();
+                let rendered_editor = active_item.downcast::<MarkdownPreviewView>().unwrap();
+                assert_eq!(
+                    rendered_editor.read(cx).mode,
+                    MarkdownPreviewMode::RenderedEditor
+                );
+                assert_eq!(active_item.buffer_kind(cx), ItemBufferKind::Singleton);
+                assert_eq!(active_item.tab_content_text(0, cx), source_title);
+                assert_eq!(
+                    active_item.project_path(cx),
+                    Some(source_project_path.clone())
+                );
+
+                let editor: Entity<Editor> = active_item.act_as::<Editor>(cx).unwrap();
+                let rendered_buffer = editor.read(cx).buffer().read(cx).as_singleton().unwrap();
+                assert_eq!(rendered_buffer, source_buffer);
+            })
+            .unwrap();
+
+        multi_workspace
+            .update(cx, |multi_workspace, window, cx| {
+                multi_workspace.workspace().update(cx, |workspace, cx| {
+                    assert!(
+                        MarkdownPreviewView::replace_active_rendered_editor_with_source(
+                            workspace, window, cx
+                        )
+                    );
+                })
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        multi_workspace
+            .update(cx, |multi_workspace, _, cx| {
+                let workspace = multi_workspace.workspace().read(cx);
+                let active_item = workspace.active_item(cx).unwrap();
+                let editor = active_item.downcast::<Editor>().unwrap();
+                let restored_buffer = editor.read(cx).buffer().read(cx).as_singleton().unwrap();
+                assert_eq!(restored_buffer, source_buffer);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    async fn rendered_editor_reports_source_dirty_state(cx: &mut TestAppContext) {
+        let app_state = init_test(cx);
+        app_state
+            .fs
+            .as_fake()
+            .insert_tree(
+                path!("/dir"),
+                json!({
+                    "todo.md": "- [ ] Item\n",
+                }),
+            )
+            .await;
+
+        cx.update(|cx| {
+            open_paths(
+                &[PathBuf::from(path!("/dir/todo.md"))],
+                app_state.clone(),
+                workspace::OpenOptions::default(),
+                cx,
+            )
+        })
+        .await
+        .unwrap();
+        cx.run_until_parked();
+
+        let multi_workspace = cx.update(|cx| cx.windows()[0].downcast::<MultiWorkspace>().unwrap());
+        multi_workspace
+            .update(cx, |multi_workspace, window, cx| {
+                multi_workspace.workspace().update(cx, |workspace, cx| {
+                    let editor: Entity<Editor> = workspace
+                        .active_item(cx)
+                        .and_then(|item| item.act_as::<Editor>(cx))
+                        .unwrap();
+                    MarkdownPreviewView::replace_active_item_with_rendered_editor(
+                        workspace, editor, window, cx,
+                    );
+                })
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        multi_workspace
+            .update(cx, |multi_workspace, _, cx| {
+                let workspace = multi_workspace.workspace().read(cx);
+                let active_item = workspace.active_item(cx).unwrap();
+                assert!(!active_item.is_dirty(cx));
+                let editor: Entity<Editor> = active_item.act_as::<Editor>(cx).unwrap();
+                editor.update(cx, |editor, cx| {
+                    editor.edit([(MultiBufferOffset(0)..MultiBufferOffset(0), "Done: ")], cx);
+                });
+                assert!(active_item.is_dirty(cx));
+            })
+            .unwrap();
+    }
 
     #[test]
     fn resolves_workspace_absolute_preview_image_path_and_rejects_missing() {

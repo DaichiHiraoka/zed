@@ -602,8 +602,15 @@
     "context": "Editor && extension == md",
     "use_key_equivalents": true,
     "bindings": {
+      "ctrl-shift-m": "markdown::ToggleRenderedEditor",
       "ctrl-k v": "markdown::OpenPreviewToTheSide",
       "ctrl-shift-v": "markdown::OpenPreview",
+    },
+  },
+  {
+    "context": "MarkdownPreview",
+    "bindings": {
+      "ctrl-shift-m": "markdown::ToggleRenderedEditor",
     },
   },
   {

@@ -30,7 +30,13 @@ actions!(
         /// Scrolls to the bottom of the markdown preview.
         ScrollToBottom,
         /// Opens a following markdown preview that syncs with the editor.
-        OpenFollowingPreview
+        OpenFollowingPreview,
+        /// Opens the current markdown file as a rendered editor in the same pane.
+        OpenRenderedEditor,
+        /// Reopens the current rendered markdown editor as source.
+        OpenSourceEditor,
+        /// Toggles the current markdown file between source and rendered edit modes.
+        ToggleRenderedEditor
     ]
 );
 
