@@ -993,9 +993,10 @@ impl MarkdownPreviewView {
         if let Some(active_editor) = active_editor {
             let editor_for_checkbox = active_editor.clone();
             let view_handle = cx.entity().downgrade();
+            let rendered_editor_mode = self.mode == MarkdownPreviewMode::RenderedEditor;
             markdown_element = markdown_element
                 .on_source_click(move |source_index, click_count, window, cx| {
-                    if click_count == 2 {
+                    if rendered_editor_mode || click_count == 2 {
                         Self::move_cursor_to_source_index(&active_editor, source_index, window, cx);
                         true
                     } else {
@@ -1357,10 +1358,22 @@ impl Item for MarkdownPreviewView {
 
     fn reload(
         &mut self,
-        _project: Entity<Project>,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
+        project: Entity<Project>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
+        if self.mode == MarkdownPreviewMode::RenderedEditor {
+            return self
+                .active_editor
+                .as_ref()
+                .map(|editor_state| {
+                    editor_state
+                        .editor
+                        .update(cx, |editor, cx| editor.reload(project, window, cx))
+                })
+                .unwrap_or_else(|| Task::ready(Ok(())));
+        }
+
         // The preview is not the owner of the source editor's buffer, so force-closing it should not discard editor changes.
         Task::ready(Ok(()))
     }
@@ -1384,6 +1397,23 @@ impl Item for MarkdownPreviewView {
         self.active_editor
             .as_ref()
             .and_then(|state| state.editor.read(cx).active_project_path(cx))
+    }
+
+    fn navigate(
+        &mut self,
+        data: Arc<dyn std::any::Any + Send>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.mode == MarkdownPreviewMode::RenderedEditor {
+            return self.active_editor.as_ref().is_some_and(|state| {
+                state
+                    .editor
+                    .update(cx, |editor, cx| editor.navigate(data, window, cx))
+            });
+        }
+
+        false
     }
 
     fn is_dirty(&self, cx: &App) -> bool {
@@ -1417,6 +1447,26 @@ impl Item for MarkdownPreviewView {
         self.active_editor
             .as_ref()
             .is_some_and(|state| state.editor.read(cx).has_conflict(cx))
+    }
+
+    fn deactivated(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.mode == MarkdownPreviewMode::RenderedEditor
+            && let Some(editor_state) = &self.active_editor
+        {
+            editor_state
+                .editor
+                .update(cx, |editor, cx| editor.deactivated(window, cx));
+        }
+    }
+
+    fn workspace_deactivated(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.mode == MarkdownPreviewMode::RenderedEditor
+            && let Some(editor_state) = &self.active_editor
+        {
+            editor_state
+                .editor
+                .update(cx, |editor, cx| editor.workspace_deactivated(window, cx));
+        }
     }
 
     fn as_searchable(
