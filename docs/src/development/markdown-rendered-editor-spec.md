@@ -691,10 +691,14 @@ for same-tab rendered Markdown editing:
   lines: paragraph and heading levels 1 through 6.
 - Rendered mode supports source-preserving list style actions for selected
   lines: unordered list, ordered list, and unchecked task list.
+- Rendered mode supports rendered-text copy and cut. Cut copies the rendered
+  plain text to the clipboard and removes the mapped Markdown source range from
+  the hidden source editor.
 - Task checkbox toggles continue to edit the source Markdown range directly.
 - Focused tests verify same-tab replacement/restoration, dirty-state
   propagation from the source buffer, and input-handler edits into the source
-  buffer, renderer selection synchronization, and basic edit-action relay.
+  buffer, renderer selection synchronization, basic edit-action relay, and
+  rendered cut source updates.
 
 This status is intentionally not equivalent to Office Viewer yet. The following
 requirements remain incomplete and must be implemented before calling the
@@ -704,8 +708,8 @@ feature done:
   and link labels
 - source-preserving rich edit commands such as link edit and table row/column
   operations
-- copy/cut/paste semantics that distinguish rendered plain text from Markdown
-  source
+- paste semantics and copy/cut boundary cases for links, lists, tables, and
+  multi-block selections
 - rendered IME candidate bounds and composition underline placement
 - rendered-mode find/replace over editable source mappings
 - source fallback editors for code blocks, Mermaid, math, raw HTML, and other

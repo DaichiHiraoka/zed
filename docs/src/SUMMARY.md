@@ -222,6 +222,7 @@
   - [Windows](./development/windows.md)
   - [FreeBSD](./development/freebsd.md)
   - [Rendered Markdown Editor Spec](./development/markdown-rendered-editor-spec.md)
+  - [Rendered Markdown Editor Smoke Test](./development/markdown-rendered-editor-smoke-test.md)
   - [Using Debuggers](./development/debuggers.md)
   - [Performance](./performance.md)
   - [Glossary](./development/glossary.md)
