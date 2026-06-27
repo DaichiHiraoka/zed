@@ -56,7 +56,13 @@ actions!(
         /// Converts selected Markdown lines to heading level 5.
         SetHeading5,
         /// Converts selected Markdown lines to heading level 6.
-        SetHeading6
+        SetHeading6,
+        /// Toggles unordered list markers for selected Markdown lines.
+        ToggleUnorderedList,
+        /// Toggles ordered list markers for selected Markdown lines.
+        ToggleOrderedList,
+        /// Toggles unchecked task list markers for selected Markdown lines.
+        ToggleTaskList
     ]
 );
 

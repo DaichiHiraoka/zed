@@ -45,8 +45,8 @@ use crate::markdown_preview_settings::MarkdownPreviewSettings;
 use crate::{
     OpenFollowingPreview, OpenPreview, OpenPreviewToTheSide, OpenRenderedEditor, OpenSourceEditor,
     ScrollDown, ScrollDownByItem, SetHeading1, SetHeading2, SetHeading3, SetHeading4, SetHeading5,
-    SetHeading6, SetParagraph, ToggleEmphasis, ToggleInlineCode, ToggleRenderedEditor,
-    ToggleStrong,
+    SetHeading6, SetParagraph, ToggleEmphasis, ToggleInlineCode, ToggleOrderedList,
+    ToggleRenderedEditor, ToggleStrong, ToggleTaskList, ToggleUnorderedList,
 };
 use crate::{ScrollPageDown, ScrollPageUp, ScrollToBottom, ScrollToTop, ScrollUp, ScrollUpByItem};
 
@@ -75,6 +75,13 @@ pub enum MarkdownPreviewMode {
     /// The rendered document replaces the source editor item in the pane while
     /// keeping the same backing Markdown buffer.
     RenderedEditor,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ListStyle {
+    Unordered,
+    Ordered,
+    Task,
 }
 
 impl MarkdownPreviewMode {
@@ -1021,6 +1028,33 @@ impl MarkdownPreviewView {
         self.apply_heading_level_to_rendered_selection(Some(6), window, cx);
     }
 
+    fn rendered_toggle_unordered_list(
+        &mut self,
+        _: &ToggleUnorderedList,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_list_style_to_rendered_selection(ListStyle::Unordered, window, cx);
+    }
+
+    fn rendered_toggle_ordered_list(
+        &mut self,
+        _: &ToggleOrderedList,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_list_style_to_rendered_selection(ListStyle::Ordered, window, cx);
+    }
+
+    fn rendered_toggle_task_list(
+        &mut self,
+        _: &ToggleTaskList,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_list_style_to_rendered_selection(ListStyle::Task, window, cx);
+    }
+
     fn apply_inline_delimiter_to_rendered_selection(
         &mut self,
         delimiter: &'static str,
@@ -1223,6 +1257,137 @@ impl MarkdownPreviewView {
         } else {
             format!("{indent}{content}")
         }
+    }
+
+    fn apply_list_style_to_rendered_selection(
+        &mut self,
+        style: ListStyle,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.mode != MarkdownPreviewMode::RenderedEditor {
+            return;
+        }
+
+        let Some(editor) = self
+            .active_editor
+            .as_ref()
+            .map(|editor_state| editor_state.editor.clone())
+        else {
+            return;
+        };
+
+        editor.update(cx, |editor, cx| {
+            let Some((selection_range, _)) = Self::selected_source_selection(editor, cx) else {
+                return;
+            };
+            let source = editor
+                .buffer()
+                .read(cx)
+                .as_singleton()
+                .map(|buffer| buffer.read(cx).snapshot().text())
+                .unwrap_or_default();
+
+            let line_range = Self::selected_line_range(&source, selection_range);
+            let selected_lines = source[line_range.clone()].split('\n').collect::<Vec<_>>();
+            let selected_lines_are_target = selected_lines
+                .iter()
+                .all(|line| line.trim().is_empty() || Self::line_has_list_style(line, style));
+            let mut ordered_number = 1;
+            let replacement = selected_lines
+                .iter()
+                .map(|line| {
+                    if line.trim().is_empty() {
+                        return (*line).to_string();
+                    }
+                    let (indent, content) = Self::strip_list_marker(line);
+                    if selected_lines_are_target {
+                        format!("{indent}{content}")
+                    } else {
+                        match style {
+                            ListStyle::Unordered => format!("{indent}- {content}"),
+                            ListStyle::Ordered => {
+                                let line = format!("{indent}{ordered_number}. {content}");
+                                ordered_number += 1;
+                                line
+                            }
+                            ListStyle::Task => format!("{indent}- [ ] {content}"),
+                        }
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let replacement_len = replacement.len();
+
+            editor.edit(
+                [(
+                    MultiBufferOffset(line_range.start)..MultiBufferOffset(line_range.end),
+                    replacement,
+                )],
+                cx,
+            );
+            editor.change_selections(SelectionEffects::no_scroll(), window, cx, |selections| {
+                selections.select_ranges([MultiBufferOffset(line_range.start)
+                    ..MultiBufferOffset(line_range.start + replacement_len)]);
+            });
+        });
+
+        self.update_markdown_from_active_editor(true, false, window, cx);
+    }
+
+    fn line_has_list_style(line: &str, style: ListStyle) -> bool {
+        let (_, rest) = Self::split_indent(line);
+        match style {
+            ListStyle::Unordered => Self::strip_unordered_marker(rest).is_some(),
+            ListStyle::Ordered => Self::strip_ordered_marker(rest).is_some(),
+            ListStyle::Task => Self::strip_task_marker(rest).is_some(),
+        }
+    }
+
+    fn strip_list_marker(line: &str) -> (&str, &str) {
+        let (indent, rest) = Self::split_indent(line);
+        if let Some(content) = Self::strip_task_marker(rest)
+            .or_else(|| Self::strip_unordered_marker(rest))
+            .or_else(|| Self::strip_ordered_marker(rest))
+        {
+            (indent, content)
+        } else {
+            (indent, rest)
+        }
+    }
+
+    fn split_indent(line: &str) -> (&str, &str) {
+        let indent_len = line
+            .bytes()
+            .take_while(|byte| matches!(byte, b' ' | b'\t'))
+            .count();
+        line.split_at(indent_len)
+    }
+
+    fn strip_task_marker(rest: &str) -> Option<&str> {
+        rest.strip_prefix("- [ ] ")
+            .or_else(|| rest.strip_prefix("- [x] "))
+            .or_else(|| rest.strip_prefix("- [X] "))
+            .or_else(|| rest.strip_prefix("* [ ] "))
+            .or_else(|| rest.strip_prefix("* [x] "))
+            .or_else(|| rest.strip_prefix("* [X] "))
+            .or_else(|| rest.strip_prefix("+ [ ] "))
+            .or_else(|| rest.strip_prefix("+ [x] "))
+            .or_else(|| rest.strip_prefix("+ [X] "))
+    }
+
+    fn strip_unordered_marker(rest: &str) -> Option<&str> {
+        rest.strip_prefix("- ")
+            .or_else(|| rest.strip_prefix("* "))
+            .or_else(|| rest.strip_prefix("+ "))
+    }
+
+    fn strip_ordered_marker(rest: &str) -> Option<&str> {
+        let marker_len = rest.bytes().take_while(u8::is_ascii_digit).count();
+        if marker_len == 0 || marker_len > 9 {
+            return None;
+        }
+        rest.get(marker_len..)?.strip_prefix(". ")
     }
 
     fn scroll_by_amount(&self, distance: Pixels) {
@@ -1955,6 +2120,9 @@ impl Render for MarkdownPreviewView {
             .on_action(cx.listener(MarkdownPreviewView::rendered_set_heading_4))
             .on_action(cx.listener(MarkdownPreviewView::rendered_set_heading_5))
             .on_action(cx.listener(MarkdownPreviewView::rendered_set_heading_6))
+            .on_action(cx.listener(MarkdownPreviewView::rendered_toggle_unordered_list))
+            .on_action(cx.listener(MarkdownPreviewView::rendered_toggle_ordered_list))
+            .on_action(cx.listener(MarkdownPreviewView::rendered_toggle_task_list))
             .on_action(cx.listener(MarkdownPreviewView::scroll_page_up))
             .on_action(cx.listener(MarkdownPreviewView::scroll_page_down))
             .on_action(cx.listener(MarkdownPreviewView::scroll_up))
@@ -2579,7 +2747,8 @@ mod tests {
     use crate::markdown_preview_view::Resource;
     use crate::markdown_preview_view::resolve_preview_image;
     use crate::{
-        SetHeading2, SetHeading4, SetParagraph, ToggleEmphasis, ToggleInlineCode, ToggleStrong,
+        SetHeading2, SetHeading4, SetParagraph, ToggleEmphasis, ToggleInlineCode,
+        ToggleOrderedList, ToggleStrong, ToggleTaskList, ToggleUnorderedList,
     };
     use buffer_diff::BufferDiff;
     use editor::actions::{Backspace, Newline, Undo};
@@ -3172,6 +3341,128 @@ mod tests {
             })
             .unwrap();
         assert_eq!(source_text(multi_workspace, cx), "Title\nBody\n");
+    }
+
+    #[gpui::test]
+    async fn rendered_editor_toggles_list_styles(cx: &mut TestAppContext) {
+        let app_state = init_test(cx);
+        app_state
+            .fs
+            .as_fake()
+            .insert_tree(
+                path!("/dir"),
+                json!({
+                    "note.md": "Alpha\nBeta\n",
+                }),
+            )
+            .await;
+
+        cx.update(|cx| {
+            open_paths(
+                &[PathBuf::from(path!("/dir/note.md"))],
+                app_state.clone(),
+                workspace::OpenOptions::default(),
+                cx,
+            )
+        })
+        .await
+        .unwrap();
+        cx.run_until_parked();
+
+        let multi_workspace = cx.update(|cx| cx.windows()[0].downcast::<MultiWorkspace>().unwrap());
+        multi_workspace
+            .update(cx, |multi_workspace, window, cx| {
+                multi_workspace.workspace().update(cx, |workspace, cx| {
+                    let editor: Entity<Editor> = workspace
+                        .active_item(cx)
+                        .and_then(|item| item.act_as::<Editor>(cx))
+                        .unwrap();
+                    editor.update(cx, |editor, cx| {
+                        editor.change_selections(SelectionEffects::no_scroll(), window, cx, |s| {
+                            s.select_ranges([MultiBufferOffset(0)..MultiBufferOffset(10)]);
+                        });
+                    });
+                    MarkdownPreviewView::replace_active_item_with_rendered_editor(
+                        workspace, editor, window, cx,
+                    );
+                })
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        let source_text = |multi_workspace: WindowHandle<MultiWorkspace>,
+                           cx: &mut TestAppContext| {
+            multi_workspace
+                .update(cx, |multi_workspace, _, cx| {
+                    let workspace = multi_workspace.workspace().read(cx);
+                    let active_item = workspace.active_item(cx).unwrap();
+                    let editor: Entity<Editor> = active_item.act_as::<Editor>(cx).unwrap();
+                    let buffer = editor.read(cx).buffer().read(cx).as_singleton().unwrap();
+                    buffer.read(cx).snapshot().text()
+                })
+                .unwrap()
+        };
+
+        multi_workspace
+            .update(cx, |multi_workspace, window, cx| {
+                let workspace = multi_workspace.workspace().read(cx);
+                let active_item = workspace.active_item(cx).unwrap();
+                let rendered_editor = active_item.downcast::<MarkdownPreviewView>().unwrap();
+                rendered_editor.update(cx, |rendered_editor, cx| {
+                    rendered_editor.rendered_toggle_unordered_list(
+                        &ToggleUnorderedList,
+                        window,
+                        cx,
+                    );
+                });
+            })
+            .unwrap();
+        assert_eq!(
+            source_text(multi_workspace.clone(), cx),
+            "- Alpha\n- Beta\n"
+        );
+
+        multi_workspace
+            .update(cx, |multi_workspace, window, cx| {
+                let workspace = multi_workspace.workspace().read(cx);
+                let active_item = workspace.active_item(cx).unwrap();
+                let rendered_editor = active_item.downcast::<MarkdownPreviewView>().unwrap();
+                rendered_editor.update(cx, |rendered_editor, cx| {
+                    rendered_editor.rendered_toggle_ordered_list(&ToggleOrderedList, window, cx);
+                });
+            })
+            .unwrap();
+        assert_eq!(
+            source_text(multi_workspace.clone(), cx),
+            "1. Alpha\n2. Beta\n"
+        );
+
+        multi_workspace
+            .update(cx, |multi_workspace, window, cx| {
+                let workspace = multi_workspace.workspace().read(cx);
+                let active_item = workspace.active_item(cx).unwrap();
+                let rendered_editor = active_item.downcast::<MarkdownPreviewView>().unwrap();
+                rendered_editor.update(cx, |rendered_editor, cx| {
+                    rendered_editor.rendered_toggle_task_list(&ToggleTaskList, window, cx);
+                });
+            })
+            .unwrap();
+        assert_eq!(
+            source_text(multi_workspace.clone(), cx),
+            "- [ ] Alpha\n- [ ] Beta\n"
+        );
+
+        multi_workspace
+            .update(cx, |multi_workspace, window, cx| {
+                let workspace = multi_workspace.workspace().read(cx);
+                let active_item = workspace.active_item(cx).unwrap();
+                let rendered_editor = active_item.downcast::<MarkdownPreviewView>().unwrap();
+                rendered_editor.update(cx, |rendered_editor, cx| {
+                    rendered_editor.rendered_toggle_task_list(&ToggleTaskList, window, cx);
+                });
+            })
+            .unwrap();
+        assert_eq!(source_text(multi_workspace, cx), "Alpha\nBeta\n");
     }
 
     #[test]
