@@ -682,10 +682,13 @@ for same-tab rendered Markdown editing:
 - Empty renderer selections paint a caret at the mapped source position, and
   rendered-mode clicks keep focus on the rendered view while moving the hidden
   source editor cursor.
+- Focused rendered mode relays core edit actions to the hidden source `Editor`:
+  newline, newline-above, newline-below, backspace, delete, tab, backtab,
+  indent, outdent, paste, undo, and redo.
 - Task checkbox toggles continue to edit the source Markdown range directly.
 - Focused tests verify same-tab replacement/restoration, dirty-state
   propagation from the source buffer, and input-handler edits into the source
-  buffer, and renderer selection synchronization.
+  buffer, renderer selection synchronization, and basic edit-action relay.
 
 This status is intentionally not equivalent to Office Viewer yet. The following
 requirements remain incomplete and must be implemented before calling the
